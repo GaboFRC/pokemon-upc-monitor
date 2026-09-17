@@ -6,5 +6,8 @@
     "cart": false,
     "variant": "-",
     "watched": true
+  },
+  "__monitor__": {
+    "sin_acceso": false
   }
 }

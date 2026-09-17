@@ -322,10 +322,25 @@ def stock_via_playwright(url: str) -> dict | None:
 # --------------------------------------------------------------------------- fuentes
 
 
-def collect() -> list[dict]:
-    """Recorre las fuentes y devuelve los productos que cumplen la regla de coincidencia."""
+def collect() -> tuple[list[dict], int, int]:
+    """
+    Recorre las fuentes y devuelve (productos que calzan, listados pedidos, listados que
+    respondieron). Los dos contadores permiten distinguir "no hay cambios" de "weplay no
+    nos deja entrar".
+    """
     found: dict[str, dict] = {}
     requests_made = 0
+    listings_tried = 0
+    listings_ok = 0
+
+    def get_listing(url):
+        nonlocal requests_made, listings_tried, listings_ok
+        html = fetch(url)
+        requests_made += 1
+        listings_tried += 1
+        if html:
+            listings_ok += 1
+        return html
 
     watch_set = set(WATCH_URLS)
 
@@ -351,8 +366,7 @@ def collect() -> list[dict]:
                      "VIGILADO" if watched else "MATCH", source, it["name"], it["status"], it["cart"])
 
     for term in SEARCH_TERMS:
-        html = fetch(BASE + "/catalogsearch/result/?q=" + quote_plus(term))
-        requests_made += 1
+        html = get_listing(BASE + "/catalogsearch/result/?q=" + quote_plus(term))
         if html:
             items = parse_listing(html)
             log.info("busqueda '%s': %d productos", term, len(items))
@@ -360,8 +374,7 @@ def collect() -> list[dict]:
         polite_pause()
 
     if CHECK_BRAND:
-        html = fetch(BRAND_URL)
-        requests_made += 1
+        html = get_listing(BRAND_URL)
         if html:
             items = parse_listing(html)
             log.info("listado marca Pokemon: %d productos", len(items))
@@ -369,8 +382,7 @@ def collect() -> list[dict]:
         polite_pause()
 
     if CHECK_PREVENTAS:
-        html = fetch(PREVENTAS_URL)
-        requests_made += 1
+        html = get_listing(PREVENTAS_URL)
         if html:
             items = parse_listing(html)
             log.info("preventas: %d productos", len(items))
@@ -393,9 +405,10 @@ def collect() -> list[dict]:
     for url in WATCH_URLS:
         if url in found:
             continue
+        if listings_tried and not listings_ok:
+            break  # si no respondio ninguna pagina, insistir solo suma peticiones rechazadas
         query = url.rsplit("/", 1)[-1].removesuffix(".html").replace("-", " ")
-        html = fetch(BASE + "/catalogsearch/result/?q=" + quote_plus(query))
-        requests_made += 1
+        html = get_listing(BASE + "/catalogsearch/result/?q=" + quote_plus(query))
         if html:
             absorb(parse_listing(html), "busqueda-vigilado")
         polite_pause()
@@ -410,8 +423,9 @@ def collect() -> list[dict]:
                 if better:
                     it.update({k: better[k] for k in ("price", "cart", "status", "label")})
 
-    log.info("ciclo: %d peticiones, %d coincidencias", requests_made, len(found))
-    return list(found.values())
+    log.info("ciclo: %d peticiones, %d/%d listados respondieron, %d coincidencias",
+             requests_made, listings_ok, listings_tried, len(found))
+    return list(found.values()), listings_tried, listings_ok
 
 
 # --------------------------------------------------------------------------- estado
@@ -552,9 +566,34 @@ def notify(title: str, message: str) -> None:
 # --------------------------------------------------------------------------- ciclo
 
 
+META = "__monitor__"
+
+
 def run_once() -> int:
-    items = collect()
+    """Un ciclo. Devuelve la cantidad de avisos, o -1 si weplay no respondio nada."""
+    items, tried, ok = collect()
     old = load_state()
+    meta = old.pop(META, {})
+
+    if tried and not ok:
+        log.error("weplay no respondio ninguna pagina (%d de %d fallaron): posible bloqueo. "
+                  "Nada de lo vigilado se pudo revisar.", tried, tried)
+        if not meta.get("sin_acceso"):
+            notify("Monitor weplay.cl SIN ACCESO",
+                   "weplay.cl rechazo todas las revisiones de este ciclo, asi que el monitor "
+                   "NO esta vigilando. Te aviso de nuevo cuando recupere el acceso.")
+        meta["sin_acceso"] = True
+        old[META] = meta
+        save_state(old)
+        return -1
+
+    if meta.get("sin_acceso"):
+        notify("Monitor weplay.cl recupero el acceso",
+               "weplay.cl volvio a responder y el monitor sigue vigilando.")
+    meta["sin_acceso"] = False
+    if ok < tried:
+        log.warning("%d de %d listados no respondieron este ciclo", tried - ok, tried)
+
     alerts, new_state = diff(old, items)
 
     if alerts:
@@ -565,6 +604,7 @@ def run_once() -> int:
     else:
         log.info("sin cambios (%d productos vigilados)", len(new_state))
 
+    new_state[META] = meta
     save_state(new_state)
     return len(alerts)
 
@@ -592,8 +632,8 @@ def main() -> int:
         return 0
 
     if args.once:
-        run_once()
-        return 0
+        # codigo 1 si no hubo acceso: el Programador de tareas o GitHub lo marcan como fallo
+        return 1 if run_once() < 0 else 0
 
     interval = args.interval * 60 if args.interval else INTERVAL
     log.info("monitor iniciado - revision cada %d minutos (Ctrl+C para salir)", interval // 60)

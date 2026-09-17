@@ -1,3 +1,5 @@
+# DESACTIVADO: probado el 2026-09-17, weplay.cl (Cloudflare) responde 403 a las IP de
+# GitHub. Ver README. Reactivar con: gh workflow enable monitor.yml
 name: Monitor UPC Pokemon 30th
 
 on:

@@ -129,30 +129,32 @@ schtasks /delete /tn "Monitor UPC Pokemon" /f
 Cron no hereda tu entorno, así que usa rutas absolutas. El `.env` se lee desde el directorio
 del script gracias al `cd`.
 
-### GitHub Actions — cada 15 minutos
+### GitHub Actions — probado y NO funciona con weplay
 
-Ya está en `.github/workflows/monitor.yml`. Sube el repo y en
-**Settings → Secrets and variables → Actions** crea:
+El workflow está en `.github/workflows/monitor.yml`, pero **está desactivado**. Se probó el 17 de
+septiembre de 2026 desde los servidores de GitHub: weplay.cl respondió **403 a todas las
+páginas**, aunque el monitor se identifica como Chrome. Cloudflare bloquea las IP de centros de
+datos, además de los User-Agent de robot. Desde una conexión de casa funciona sin problema.
 
-- `NTFY_TOPIC` (obligatorio)
-- `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` (opcionales)
+Queda en el repo por si weplay cambia su configuración. Para volver a probarlo:
 
-El workflow commitea `state.json` de vuelta al repo para no repetir avisos entre ejecuciones,
-y guarda `monitor.log` como artefacto por 7 días.
+```bash
+gh workflow enable monitor.yml
+```
 
-Dos notas honestas:
+```bash
+gh workflow run monitor.yml
+```
 
-1. **weplay.cl filtra por User-Agent, no por IP.** Comprobado el 17 de septiembre de 2026 desde
-   una misma conexión: `python-requests`, `curl` y `Googlebot` reciben **403**; Chrome recibe
-   **200**. El monitor ya se identifica como Chrome, así que debería funcionar desde un runner.
-   Lo que queda sin comprobar es si Cloudflare bloquea además las IP de centros de datos — eso
-   solo se sabe ejecutando el workflow una vez con *Run workflow*. Hazlo antes de confiar en
-   esta vía; si da 403, corre el monitor en tu PC.
-2. **El cron de GitHub no es puntual.** En repos públicos los trabajos se encolan y pueden
-   atrasarse bastante en horas de carga. Es fiable para vigilar durante semanas, no para pelear
-   un lanzamiento que se agota en 60 segundos.
+Si lo reactivas, necesita el secreto `NTFY_TOPIC` (ya está cargado en el repo). Revisa el log de la
+ejecución, no solo el color verde: si weplay bloquea, ahora el programa termina con error y te
+avisa "SIN ACCESO".
 
-Si el repo es privado, además consume minutos de Actions.
+## Si weplay deja de responder
+
+Si un ciclo completo recibe rechazo en todas las páginas, el monitor no dice "sin cambios": te
+manda **una** notificación "Monitor weplay.cl SIN ACCESO", y otra cuando recupera el acceso.
+Con `--once` termina además con código de error 1.
 
 ## Opciones extra
 
