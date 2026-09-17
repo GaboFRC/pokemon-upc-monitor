@@ -75,6 +75,20 @@ CHECK_PREVENTAS = _env_bool("CHECK_PREVENTAS", True)
 PROBE_URLS = _env_bool("PROBE_PRODUCT_URLS", False)
 PLAYWRIGHT_FALLBACK = _env_bool("PLAYWRIGHT_FALLBACK", False)
 
+
+def _canon(url: str) -> str:
+    """URL comparable: sin query ni fragmento, en minusculas y con dominio."""
+    url = url.strip().split("#")[0].split("?")[0].lower()
+    if url and not url.startswith("http"):
+        url = BASE + "/" + url.lstrip("/")
+    return url
+
+
+# Productos puntuales que se vigilan por URL, sin pasar por la regla del UPC.
+# Avisan cuando quedan comprables online (boton de carrito y no "solo en tienda").
+DEFAULT_WATCH = BASE + "/pokemon-tcg-30th-celebration-elite-trainer-box-english.html"
+WATCH_URLS = [_canon(u) for u in _env("WATCH_URLS", DEFAULT_WATCH).split(",") if u.strip()]
+
 BRAND_URL = BASE + "/juegos-de-mesa-y-cartas/cartas-y-mazos.html?brand_id=2049"
 PREVENTAS_URL = BASE + "/preventas.html"
 
@@ -208,7 +222,15 @@ def compute_status(name: str, url: str, label_cls: str, label_txt: str, cart: bo
 def parse_listing(html: str) -> list[dict]:
     """Extrae productos de cualquier grilla de Magento (busqueda, categoria, preventas)."""
     out = []
-    for block in re.split(r"product-item-info", html)[1:]:
+    # Cada tarjeta es un <li class="item product product-item">. La ultima se corta en
+    # </ol> para no arrastrar botones de widgets que haya mas abajo en la pagina.
+    cards = re.split(r'<li class="item product product-item"', html)[1:]
+    if cards:
+        cards[-1] = cards[-1].split("</ol>")[0]
+    else:
+        cards = re.split(r"product-item-info", html)[1:]
+
+    for block in cards:
         m = (re.search(r'class="product-item-link"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', block, re.S)
              or re.search(r'href="([^"]+)"[^>]+class="product-item-link"[^>]*>(.*?)</a>', block, re.S))
         if not m:
@@ -305,17 +327,28 @@ def collect() -> list[dict]:
     found: dict[str, dict] = {}
     requests_made = 0
 
+    watch_set = set(WATCH_URLS)
+
     def absorb(items, source):
         for it in items:
-            if not is_target(it["name"]):
+            key = _canon(it["url"])
+            watched = key in watch_set
+            if not (is_target(it["name"]) or watched):
                 continue
+            it["url"] = key
             it["source"] = source
-            it["variant"] = variant_of(it["name"], it["url"])
-            prev = found.get(it["url"])
-            # la primera fuente con un estado concreto manda
-            if prev is None or (prev["status"] == "desconocido" and it["status"] != "desconocido"):
-                found[it["url"]] = it
-            log.info("MATCH [%s] %s | %s | %s", source, it["name"], it["status"], it["url"])
+            it["watched"] = watched
+            it["variant"] = variant_of(it["name"], it["url"]) if not watched else "-"
+            prev = found.get(key)
+            # Las paginas de weplay pasan por cache y dos fuentes pueden discrepar unos
+            # minutos. Si alguna lo muestra comprable online, se prefiere esa: mejor un
+            # aviso de mas que perderse el stock.
+            if (prev is None
+                    or (prev["status"] == "desconocido" and it["status"] != "desconocido")
+                    or (is_online(it) and not is_online(prev))):
+                found[key] = it
+            log.info("%s [%s] %s | %s | carrito=%s",
+                     "VIGILADO" if watched else "MATCH", source, it["name"], it["status"], it["cart"])
 
     for term in SEARCH_TERMS:
         html = fetch(BASE + "/catalogsearch/result/?q=" + quote_plus(term))
@@ -355,6 +388,20 @@ def collect() -> list[dict]:
                     absorb([item], "sondeo-url")
             polite_pause()
 
+    # Un producto vigilado que no salio en ninguna fuente: una busqueda extra con las
+    # palabras de su URL. La ficha de producto no sirve aqui porque no trae el stock.
+    for url in WATCH_URLS:
+        if url in found:
+            continue
+        query = url.rsplit("/", 1)[-1].removesuffix(".html").replace("-", " ")
+        html = fetch(BASE + "/catalogsearch/result/?q=" + quote_plus(query))
+        requests_made += 1
+        if html:
+            absorb(parse_listing(html), "busqueda-vigilado")
+        polite_pause()
+        if url not in found:
+            log.warning("no vi %s en ninguna fuente; conservo su estado anterior", url)
+
     if PLAYWRIGHT_FALLBACK:
         for url, it in list(found.items()):
             if it["status"] == "desconocido":
@@ -389,41 +436,57 @@ def save_state(state: dict) -> None:
 BUYABLE = {"en_stock", "preventa"}
 
 
+def is_online(it: dict) -> bool:
+    """Comprable por la web: boton de carrito y sin etiqueta de tienda o agotado."""
+    return bool(it.get("cart")) and it.get("status") not in ("solo_en_tienda", "agotado")
+
+
 def clp(value) -> str:
     return "$" + format(value, ",").replace(",", ".") if value else "sin precio"
 
 
 def diff(old: dict, items: list[dict]) -> tuple[list[str], dict]:
     """Devuelve (avisos, estado nuevo). Solo avisa cuando algo cambia de verdad."""
-    alerts, new_state = [], {}
+    alerts = []
+    # Lo que no se vio este ciclo se conserva: si no, al reaparecer se avisaria
+    # como producto nuevo.
+    new_state = dict(old)
 
     for it in items:
         url = it["url"]
-        new_state[url] = {k: it[k] for k in ("name", "price", "status", "cart", "variant")}
         prev = old.get(url)
+        new_state[url] = {k: it.get(k) for k in ("name", "price", "status", "cart", "variant", "watched")}
         boton = "habilitado" if it["cart"] else "deshabilitado"
 
         if prev is None:
+            if it.get("watched") and not is_online(it):
+                # producto conocido que se empieza a vigilar: registrar sin molestar
+                log.info("empiezo a vigilar %s (hoy: %s)", it["name"], it["status"])
+                continue
+            header = "DISPONIBLE PARA COMPRA ONLINE" if it.get("watched") else "NUEVO PRODUCTO DETECTADO"
             alerts.append(
-                "NUEVO PRODUCTO DETECTADO\n" + it["name"]
-                + "\nVariante: " + it["variant"]
+                header + "\n" + it["name"]
+                + ("" if it.get("watched") else "\nVariante: " + it["variant"])
                 + "\nEstado: " + it["status"] + " | Agregar al carrito: " + boton
                 + "\nPrecio: " + clp(it["price"])
                 + "\n" + url)
             continue
 
-        if prev.get("status") != it["status"] and it["status"] in BUYABLE:
+        if is_online(it) and not is_online(prev):
+            alerts.append(
+                "DISPONIBLE PARA COMPRA ONLINE (antes: " + str(prev.get("status")) + ")\n"
+                + it["name"]
+                + "\nPrecio: " + clp(it["price"])
+                + "\n" + url)
+        elif prev.get("status") != it["status"] and it["status"] in BUYABLE:
             alerts.append(
                 "CAMBIO DE ESTADO: " + str(prev.get("status")) + " -> " + it["status"].upper()
                 + "\n" + it["name"]
                 + "\nAgregar al carrito: " + boton
                 + "\nPrecio: " + clp(it["price"])
                 + "\n" + url)
-        elif not prev.get("cart") and it["cart"]:
-            alerts.append(
-                "BOTON AGREGAR AL CARRITO HABILITADO\n" + it["name"]
-                + "\nPrecio: " + clp(it["price"])
-                + "\n" + url)
+        elif is_online(prev) and not is_online(it):
+            log.info("%s dejo de estar disponible online (ahora: %s)", it["name"], it["status"])
 
         if prev.get("price") and it["price"] and prev["price"] != it["price"]:
             alerts.append(
@@ -497,7 +560,7 @@ def run_once() -> int:
     if alerts:
         for a in alerts:
             log.info("AVISO:\n%s", a)
-        notify("Pokemon 30th Ultra-Premium Collection - weplay.cl",
+        notify("Pokemon 30th Celebration - weplay.cl",
                "\n\n---\n\n".join(alerts))
     else:
         log.info("sin cambios (%d productos vigilados)", len(new_state))

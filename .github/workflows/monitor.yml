@@ -36,6 +36,7 @@ jobs:
           NTFY_SERVER: ${{ secrets.NTFY_SERVER || 'https://ntfy.sh' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WATCH_URLS: "https://www.weplay.cl/pokemon-tcg-30th-celebration-elite-trainer-box-english.html"
           SEARCH_TERMS: "30th,ultra premium"
           CHECK_BRAND_LISTING: "true"
           CHECK_PREVENTAS: "true"

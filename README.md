@@ -32,8 +32,28 @@ Kodak "Ultra Premium" que hay en el catálogo. La variante Day/Night se deduce d
 > no se pueden comprar online. Que el producto aparezca no significa que lo puedas comprar; lo
 > que importa es que el botón *Agregar al Carro* quede habilitado. El monitor avisa de eso aparte.
 
-**Avisa solo cuando cambia algo**: producto nuevo, paso a stock/preventa, botón de carrito
-habilitado, o cambio de precio. El estado vive en `state.json`.
+**Avisa solo cuando cambia algo**: producto nuevo, paso a stock/preventa, queda comprable
+online, o cambio de precio. El estado vive en `state.json`. Si un producto no aparece en algún
+ciclo, se conserva su estado anterior (así no llega un falso "producto nuevo" cuando reaparece).
+
+### Productos vigilados por URL
+
+Además del UPC, puedes vigilar productos que ya existen poniendo su URL en `WATCH_URLS`
+(varias separadas por coma). Viene configurado el **30th Celebration Elite Trainer Box English**.
+
+Para estos productos el aviso es uno solo: **cuando quedan comprables online** — botón
+*Agregar al Carro* presente y sin la etiqueta *Disponible solo en tienda*. Si al empezar a
+vigilarlo está solo en tienda, lo registra en silencio.
+
+Ese ETB en particular fluctúa: el 16 de septiembre de 2026 estaba comprable online y el 17
+volvió a "solo en tienda".
+
+Si el producto aparece en la búsqueda "30th" (como el ETB), no suma peticiones. Si no aparece
+en ninguna fuente, hace una búsqueda extra con las palabras de su URL.
+
+Las páginas de weplay pasan por caché y la búsqueda y el listado pueden discrepar por unos
+minutos. Cuando eso pasa, el monitor se queda con la versión que lo muestra disponible:
+prefiere un aviso de más a perderse el stock.
 
 ### Sobre robots.txt
 
