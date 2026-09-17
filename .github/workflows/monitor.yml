@@ -1,0 +1,67 @@
+name: Monitor UPC Pokemon 30th
+
+on:
+  schedule:
+    # Cada 15 minutos. GitHub encola los cron de repos publicos y puede
+    # atrasarlos varios minutos en horas de alta carga; no es puntual al segundo.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:        # permite ejecutarlo a mano desde la pestana Actions
+
+concurrency:
+  group: monitor-upc
+  cancel-in-progress: false  # no cortar un ciclo a medias: perderia el state.json
+
+permissions:
+  contents: write            # necesario para versionar state.json
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Revisar weplay.cl
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_SERVER: ${{ secrets.NTFY_SERVER || 'https://ntfy.sh' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SEARCH_TERMS: "30th,ultra premium"
+          CHECK_BRAND_LISTING: "true"
+          CHECK_PREVENTAS: "true"
+          PROBE_PRODUCT_URLS: "false"
+          PLAYWRIGHT_FALLBACK: "false"
+        run: python monitor.py --once -v
+
+      - name: Persistir state.json
+        run: |
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "estado: $(date -u '+%Y-%m-%d %H:%M UTC')"
+            # otro ciclo pudo haber hecho push mientras corriamos
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            git push
+          else
+            echo "sin cambios en state.json"
+          fi
+
+      - name: Guardar el log como artefacto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-log-${{ github.run_id }}
+          path: monitor.log
+          retention-days: 7
+          if-no-files-found: ignore

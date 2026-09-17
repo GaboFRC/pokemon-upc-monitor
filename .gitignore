@@ -1,0 +1,11 @@
+.env
+monitor.log
+monitor.log.*
+*.json.tmp
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# state.json NO se ignora a proposito: el workflow de GitHub Actions
+# lo versiona para no repetir avisos entre ejecuciones.
